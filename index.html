@@ -299,6 +299,28 @@ nav button.active{color:var(--teal);font-weight:700}
 <!-- ════════ 数据 ════════ -->
 <section class="tab" id="tab-data">
   <div class="card">
+    <h2>☁️ 云端共享账本（GitHub）<button class="btn small ghost" id="cloudCfgToggle">设置</button></h2>
+    <div id="cloudCfg" style="display:none;margin-bottom:12px">
+      <label class="fld"><span>GitHub Token（fine-grained，需 Contents 读写权限）</span>
+        <input id="cToken" type="password" placeholder="github_pat_…" autocomplete="off"></label>
+      <div class="row">
+        <label class="fld"><span>用户/组织</span><input id="cOwner"></label>
+        <label class="fld"><span>仓库</span><input id="cRepo"></label>
+      </div>
+      <div class="row">
+        <label class="fld"><span>分支</span><input id="cBranch"></label>
+        <label class="fld"><span>文件夹</span><input id="cDir"></label>
+      </div>
+      <button class="btn ghost" id="cloudCfgSave">保存设置</button>
+    </div>
+    <div class="hint" id="cloudStatus" style="margin:0 0 10px"></div>
+    <button class="btn primary" id="cloudLoad" style="margin-bottom:10px">⬇️ 从云端读取账本</button>
+    <button class="btn ghost" id="cloudSave">⬆️ 保存账本到云端</button>
+    <div class="hint">账本就是仓库 data/ 文件夹里的三张 CSV（流水 / 每日汇总 / 进货记录）。
+    多台设备共用一本账：<b>开摊先「读取」，收摊后「保存」</b>；「保存」会用本机账本覆盖云端。</div>
+  </div>
+
+  <div class="card">
     <h2>导出 CSV 备份（建议每周一次）</h2>
     <button class="btn primary" id="expFlow" style="margin-bottom:10px">⬇️ 导出收支流水 CSV</button>
     <button class="btn ghost" id="expDaily" style="margin-bottom:10px">⬇️ 导出每日汇总 CSV</button>
@@ -731,7 +753,7 @@ $('#copyFlow').addEventListener('click', async ()=>{
     document.execCommand('copy'); ta.remove(); toast('已复制到剪贴板');
   }
 });
-$('#expDaily').addEventListener('click', ()=>{
+function dailyRows(){
   const byDay = {};
   state.entries.forEach(e=>{
     const d = byDay[e.date] = byDay[e.date] || {qty:0,sale:0,inc:0,buy:0,oth:0};
@@ -746,15 +768,21 @@ $('#expDaily').addEventListener('click', ()=>{
     rows.push([ds, fmt(v.qty), fmt(v.sale), fmt(v.inc), fmt(v.buy), fmt(v.oth),
       fmt(v.sale+v.inc-v.buy-v.oth)]);
   });
-  download('海鲜每日汇总_'+todayStr()+'.csv', toCSV(rows)); toast('已导出每日汇总');
-});
-$('#expBuy').addEventListener('click', ()=>{
+  return rows;
+}
+function buyRows(){
   const rows = [['日期','品名','数量','单位','单价','金额','备注']];
   state.entries.filter(e=>e.type==='expense' && e.category==='进货')
     .sort((a,b)=> a.date<b.date?-1:1)
     .forEach(e=> rows.push([e.date, e.name, e.qty===''?'':fmt(e.qty), e.unit||'',
       e.unitPrice===''?'':fmt(e.unitPrice), fmt(e.amount), e.note||'']));
-  download('海鲜进货记录_'+todayStr()+'.csv', toCSV(rows)); toast('已导出进货记录');
+  return rows;
+}
+$('#expDaily').addEventListener('click', ()=>{
+  download('海鲜每日汇总_'+todayStr()+'.csv', toCSV(dailyRows())); toast('已导出每日汇总');
+});
+$('#expBuy').addEventListener('click', ()=>{
+  download('海鲜进货记录_'+todayStr()+'.csv', toCSV(buyRows())); toast('已导出进货记录');
 });
 
 function parseCSV(text){
@@ -780,29 +808,35 @@ function parseCSV(text){
   if(field!=='' || row.length){ row.push(field); if(row.length>1||row[0]!=='') rows.push(row); }
   return rows;
 }
+function entriesFromCSVRows(rows){
+  if(!rows.length) throw new Error('文件为空');
+  const head = rows[0].map(s=>String(s).replace(/^﻿/,''));
+  const ix = nm => head.indexOf(nm);
+  if(ix('日期')<0 || ix('类型')<0 || ix('金额')<0)
+    throw new Error('表头不对：需要包含 日期、类型、金额 列（请用本 APP 的流水 CSV 格式）');
+  const list = [];
+  for(let i=1;i<rows.length;i++){
+    const r = rows[i]; if(!r[ix('日期')]) continue;
+    const type = LABEL_TYPE[r[ix('类型')]] || 'expense';
+    list.push({id:uid(), date:r[ix('日期')], type,
+      category: ix('类别')>=0 ? r[ix('类别')]||'' : '',
+      name: ix('品名')>=0 ? r[ix('品名')]||'' : '',
+      qty: ix('数量')>=0 && r[ix('数量')]!=='' ? parseFloat(r[ix('数量')]) : '',
+      unit: ix('单位')>=0 ? r[ix('单位')]||'' : '',
+      unitPrice: ix('单价')>=0 && r[ix('单价')]!=='' ? parseFloat(r[ix('单价')]) : '',
+      amount: parseFloat(r[ix('金额')])||0,
+      note: ix('备注')>=0 ? r[ix('备注')]||'' : '', ts: Date.now()+i});
+  }
+  return list;
+}
 $('#impGo').addEventListener('click', ()=>{
   const f = $('#impFile').files[0];
   if(!f){ toast('请先选择 CSV 文件'); return; }
   const rd = new FileReader();
   rd.onload = ()=>{
-    const rows = parseCSV(rd.result);
-    if(!rows.length){ toast('文件为空'); return; }
-    const head = rows[0];
-    const ix = nm => head.indexOf(nm);
-    if(ix('日期')<0 || ix('类型')<0 || ix('金额')<0){ alert('表头不对：需要包含 日期、类型、金额 列（请用本 APP 导出的流水 CSV）'); return; }
-    const list = [];
-    for(let i=1;i<rows.length;i++){
-      const r = rows[i]; if(!r[ix('日期')]) continue;
-      const type = LABEL_TYPE[r[ix('类型')]] || 'expense';
-      list.push({id:uid(), date:r[ix('日期')], type,
-        category: ix('类别')>=0 ? r[ix('类别')]||'' : '',
-        name: ix('品名')>=0 ? r[ix('品名')]||'' : '',
-        qty: ix('数量')>=0 && r[ix('数量')]!=='' ? parseFloat(r[ix('数量')]) : '',
-        unit: ix('单位')>=0 ? r[ix('单位')]||'' : '',
-        unitPrice: ix('单价')>=0 && r[ix('单价')]!=='' ? parseFloat(r[ix('单价')]) : '',
-        amount: parseFloat(r[ix('金额')])||0,
-        note: ix('备注')>=0 ? r[ix('备注')]||'' : '', ts: Date.now()+i});
-    }
+    let list;
+    try{ list = entriesFromCSVRows(parseCSV(rd.result)); }
+    catch(err){ alert(err.message); return; }
     const replace = $('#impReplace').checked;
     if(!confirm('解析到 '+list.length+' 条记录。\n'+(replace?'将【替换】现有全部 '+state.entries.length+' 条记录':'将追加到现有记录后面')+'，确定？')) return;
     state.entries = replace ? list : state.entries.concat(list);
@@ -810,6 +844,114 @@ $('#impGo').addEventListener('click', ()=>{
   };
   rd.readAsText(f, 'utf-8');
 });
+
+/* ───────── 云端共享账本（GitHub） ───────── */
+const CKEY = 'seafood_cloud_v1';
+let cloud = Object.assign(
+  {owner:'phyphy-quant', repo:'seafood', branch:'main', dir:'data', token:'', lastSync:''},
+  JSON.parse(localStorage.getItem(CKEY)||'{}'));
+function saveCloud(){ localStorage.setItem(CKEY, JSON.stringify(cloud)); }
+function ghUrl(file){
+  return 'https://api.github.com/repos/'+cloud.owner+'/'+cloud.repo+
+    '/contents/'+encodeURIComponent(cloud.dir+'/'+file).replace(/%2F/g,'/');
+}
+function ghHeaders(){
+  const h = {'Accept':'application/vnd.github+json'};
+  if(cloud.token) h['Authorization'] = 'Bearer '+cloud.token;
+  return h;
+}
+function b64encUtf8(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function b64decUtf8(b64){
+  const bin = atob(String(b64).replace(/\s/g,''));
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+async function ghGet(file){
+  const r = await fetch(ghUrl(file)+'?ref='+cloud.branch, {headers:ghHeaders(), cache:'no-store'});
+  if(r.status===404) return null;
+  if(!r.ok) throw new Error('读取云端失败 HTTP '+r.status+(r.status===401||r.status===403?'（Token 无效或没权限）':''));
+  return r.json();
+}
+async function ghPut(file, text, msg){
+  const cur = await ghGet(file);
+  const body = {message:msg, content:b64encUtf8(text), branch:cloud.branch};
+  if(cur && cur.sha) body.sha = cur.sha;
+  const r = await fetch(ghUrl(file), {method:'PUT', headers:ghHeaders(), body:JSON.stringify(body)});
+  if(!r.ok){
+    const e = await r.json().catch(()=>({}));
+    throw new Error('保存「'+file+'」失败 HTTP '+r.status+(e.message?'：'+e.message:''));
+  }
+}
+function renderCloudStatus(){
+  $('#cloudStatus').textContent = '仓库 '+cloud.owner+'/'+cloud.repo+'/'+cloud.dir+
+    ' · '+(cloud.token?'Token 已配置 ✅':'未配置 Token（只能读，不能保存）')+
+    (cloud.lastSync?' · 上次同步 '+cloud.lastSync:'');
+}
+$('#cloudCfgToggle').addEventListener('click', ()=>{
+  const f = $('#cloudCfg');
+  const show = f.style.display==='none';
+  f.style.display = show ? 'block':'none';
+  if(show){
+    $('#cToken').value = cloud.token; $('#cOwner').value = cloud.owner;
+    $('#cRepo').value = cloud.repo; $('#cBranch').value = cloud.branch;
+    $('#cDir').value = cloud.dir;
+  }
+});
+$('#cloudCfgSave').addEventListener('click', ()=>{
+  cloud.token = $('#cToken').value.trim();
+  cloud.owner = $('#cOwner').value.trim() || 'phyphy-quant';
+  cloud.repo = $('#cRepo').value.trim() || 'seafood';
+  cloud.branch = $('#cBranch').value.trim() || 'main';
+  cloud.dir = $('#cDir').value.trim().replace(/^\/+|\/+$/g,'') || 'data';
+  saveCloud(); renderCloudStatus();
+  $('#cloudCfg').style.display = 'none';
+  toast('云端设置已保存');
+});
+function nowStamp(){
+  const d = new Date();
+  return todayStr()+' '+pad(d.getHours())+':'+pad(d.getMinutes());
+}
+$('#cloudLoad').addEventListener('click', async ()=>{
+  const btn = $('#cloudLoad'); btn.disabled = true;
+  try{
+    toast('正在读取云端…');
+    const f = await ghGet('流水.csv');
+    if(!f){ alert('云端还没有账本（'+cloud.dir+'/流水.csv 不存在或是空仓库）。\n先在本机记几笔，点「保存账本到云端」上传一次。'); return; }
+    const list = entriesFromCSVRows(parseCSV(b64decUtf8(f.content)));
+    if(!confirm('云端账本共 '+list.length+' 条记录。\n将【替换】本机当前 '+state.entries.length+' 条记录，确定？\n（如果本机有云端没有的新账，请先「保存到云端」）')) return;
+    state.entries = list;
+    cloud.lastSync = nowStamp(); save(); saveCloud();
+    renderAll(); renderCloudStatus();
+    toast('已读取云端账本：'+list.length+' 条');
+  }catch(err){ alert(err.message); }
+  finally{ btn.disabled = false; }
+});
+$('#cloudSave').addEventListener('click', async ()=>{
+  if(!cloud.token){
+    alert('保存需要 GitHub Token。\n申请方法（一次就好）：\nGitHub 网页 → 头像 → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token；\nRepository access 选 Only select repositories → '+cloud.owner+'/'+cloud.repo+'；\nPermissions → Contents → Read and write。\n生成后把 token 粘贴到上面「设置」里。');
+    $('#cloudCfg').style.display = 'block';
+    return;
+  }
+  if(!confirm('将用本机账本（'+state.entries.length+' 条）覆盖云端账本，确定？\n（两人共用时，确认对方已保存、你已读取过最新账本）')) return;
+  const btn = $('#cloudSave'); btn.disabled = true;
+  try{
+    toast('正在保存到云端…');
+    const msg = '记账更新 '+nowStamp();
+    await ghPut('流水.csv', toCSV(flowRows()), msg);
+    await ghPut('每日汇总.csv', toCSV(dailyRows()), msg);
+    await ghPut('进货记录.csv', toCSV(buyRows()), msg);
+    cloud.lastSync = nowStamp(); saveCloud(); renderCloudStatus();
+    toast('已保存到云端 ✅');
+  }catch(err){ alert(err.message); }
+  finally{ btn.disabled = false; }
+});
+renderCloudStatus();
 
 /* ───────── 商品管理 ───────── */
 function renderProdMgr(){
